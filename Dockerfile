@@ -1,14 +1,14 @@
-FROM runpod/pytorch:2.5.1-py3.11-cuda12.4.1-devel-ubuntu22.04
+FROM runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04
 
 RUN apt-get update && apt-get install -y git && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /
+WORKDIR /app
 
 RUN git clone https://github.com/Zheng-Chong/CatVTON.git /catvton
 
-COPY builder/requirements.txt .
+COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY src/handler.py .
+COPY handler.py .
 
-CMD ["python", "-u", "/handler.py"]
+CMD ["python", "-u", "handler.py"]

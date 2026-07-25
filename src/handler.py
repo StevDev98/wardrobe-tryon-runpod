@@ -1,21 +1,14 @@
-"""
-RunPod Serverless worker for CatVTON — FastAPI endpoint
-"""
 import io
 import base64
-import os
 import sys
 import traceback
 
-import torch
-from PIL import Image
-from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+import runpod
 
 sys.path.insert(0, "/catvton")
 
-app = FastAPI()
-
+import torch
+from PIL import Image
 from model.pipeline import CatVTONPipeline
 from utils import resize_and_crop, resize_and_padding
 
@@ -26,7 +19,7 @@ def load_model():
     global pipe
     if pipe is not None:
         return pipe
-    print(f"Loading CatVTON on {torch.cuda.get_device_name()}")
+    print(f"Loading CatVTON on {torch.cuda.get_device_name()}", flush=True)
     pipe = CatVTONPipeline(
         base_ckpt="booksforcharlie/stable-diffusion-inpainting",
         attn_ckpt="zhengchong/CatVTON",
@@ -34,21 +27,13 @@ def load_model():
         weight_dtype=torch.float16,
         device="cuda",
     )
-    print("CatVTON ready")
+    print("CatVTON ready", flush=True)
     return pipe
 
 
-@app.on_event("startup")
-async def startup():
-    load_model()
-
-
-@app.post("/runsync")
-async def runsync(request: Request):
+def handler(job):
     try:
-        body = await request.json()
-        inp = body.get("input", body)
-
+        inp = job["input"]
         person_b64 = inp["person_image"]
         garment_b64 = inp["garment_image"]
         steps = inp.get("num_inference_steps", 50)
@@ -62,8 +47,8 @@ async def runsync(request: Request):
         garment_img = resize_and_padding(garment_img, (768, 1024))
 
         gen = torch.Generator(device="cuda").manual_seed(seed)
-
         model = load_model()
+
         result = model(
             image=person_img,
             condition_image=garment_img,
@@ -76,20 +61,11 @@ async def runsync(request: Request):
 
         buf = io.BytesIO()
         result_img.save(buf, format="PNG")
-        return {"output": {"image": base64.b64encode(buf.getvalue()).decode()}}
+        return {"image": base64.b64encode(buf.getvalue()).decode()}
 
-    except Exception:
-        return JSONResponse(
-            {"error": traceback.format_exc()}, status_code=500
-        )
-
-
-@app.get("/health")
-async def health():
-    return {"status": "ok", "gpu": torch.cuda.get_device_name()}
+    except Exception as e:
+        return {"error": str(e), "traceback": traceback.format_exc()}
 
 
 if __name__ == "__main__":
-    import uvicorn
-    load_model()
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    runpod.serverless.start({"handler": handler})

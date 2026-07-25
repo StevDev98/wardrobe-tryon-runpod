@@ -1,11 +1,23 @@
 """
-RunPod Serverless handler for CatVTON Virtual Try-On
+RunPod Serverless worker for CatVTON — FastAPI endpoint
 """
 import io
 import base64
+import os
+import sys
 import traceback
 
-import runpod
+import torch
+from PIL import Image
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+
+sys.path.insert(0, "/catvton")
+
+app = FastAPI()
+
+from model.pipeline import CatVTONPipeline
+from utils import resize_and_crop, resize_and_padding
 
 pipe = None
 
@@ -14,13 +26,6 @@ def load_model():
     global pipe
     if pipe is not None:
         return pipe
-
-    import sys
-    sys.path.insert(0, "/catvton")
-    import torch
-
-    from model.pipeline import CatVTONPipeline
-
     print(f"Loading CatVTON on {torch.cuda.get_device_name()}")
     pipe = CatVTONPipeline(
         base_ckpt="booksforcharlie/stable-diffusion-inpainting",
@@ -33,25 +38,29 @@ def load_model():
     return pipe
 
 
-def handler(job):
+@app.on_event("startup")
+async def startup():
+    load_model()
+
+
+@app.post("/runsync")
+async def runsync(request: Request):
     try:
-        job_input = job["input"]
+        body = await request.json()
+        inp = body.get("input", body)
 
-        person_b64 = job_input["person_image"]
-        garment_b64 = job_input["garment_image"]
-        steps = job_input.get("num_inference_steps", 50)
-        guidance = job_input.get("guidance_scale", 2.5)
-        seed = job_input.get("seed", 42)
+        person_b64 = inp["person_image"]
+        garment_b64 = inp["garment_image"]
+        steps = inp.get("num_inference_steps", 50)
+        guidance = inp.get("guidance_scale", 2.5)
+        seed = inp.get("seed", 42)
 
-        from PIL import Image
         person_img = Image.open(io.BytesIO(base64.b64decode(person_b64))).convert("RGB")
         garment_img = Image.open(io.BytesIO(base64.b64decode(garment_b64))).convert("RGB")
 
-        from utils import resize_and_crop, resize_and_padding
         person_img = resize_and_crop(person_img, (768, 1024))
         garment_img = resize_and_padding(garment_img, (768, 1024))
 
-        import torch
         gen = torch.Generator(device="cuda").manual_seed(seed)
 
         model = load_model()
@@ -67,12 +76,20 @@ def handler(job):
 
         buf = io.BytesIO()
         result_img.save(buf, format="PNG")
-        return {"image": base64.b64encode(buf.getvalue()).decode()}
+        return {"output": {"image": base64.b64encode(buf.getvalue()).decode()}}
 
-    except Exception as e:
-        return {"error": str(e), "traceback": traceback.format_exc()}
+    except Exception:
+        return JSONResponse(
+            {"error": traceback.format_exc()}, status_code=500
+        )
+
+
+@app.get("/health")
+async def health():
+    return {"status": "ok", "gpu": torch.cuda.get_device_name()}
 
 
 if __name__ == "__main__":
+    import uvicorn
     load_model()
-    runpod.serverless.start({"handler": handler})
+    uvicorn.run(app, host="0.0.0.0", port=8000)
